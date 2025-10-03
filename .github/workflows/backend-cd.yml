@@ -50,23 +50,94 @@ jobs:
             --resource-group "${{ github.event.inputs.aks_resource_group }}" \
             --attach-acr "${{ github.event.inputs.aks_acr_name }}"
 
-      - name: Deploy Backend Infrastructure (Namespace, ConfigMaps, Secrets, Databases)
+      # ----------- DO NOT cd; detect the right folder instead -----------
+      - name: Locate k8s manifests directory
+        id: locate_manifests
+        shell: bash
         run: |
-          echo "Deploying backend infrastructure..."
-          kubectl apply -f k8s/configmaps.yaml
-          kubectl apply -f k8s/secrets.yaml
-          kubectl apply -f k8s/product-db.yaml
-          kubectl apply -f k8s/order-db.yaml
+          set -euo pipefail
+          # Try common locations first
+          for d in "k8s" "week08/k8s" "infra/k8s" "./k8s"; do
+            if [ -d "$d" ]; then
+              echo "Found manifests dir: $d"
+              echo "MANIFEST_DIR=$d" >> $GITHUB_ENV
+              exit 0
+            fi
+          done
+          # Auto-detect by known files
+          CANDIDATE="$(git ls-files | grep -E '/k8s/(product-service|order-service)\.yaml$' | head -n1 || true)"
+          if [ -n "$CANDIDATE" ]; then
+            d="$(dirname "$CANDIDATE")"
+            echo "Auto-detected manifests dir: $d"
+            echo "MANIFEST_DIR=$d" >> $GITHUB_ENV
+            exit 0
+          fi
+          echo "❌ Could not find k8s manifests directory in the repository" >&2
+          exit 1
+      # ------------------------------------------------------------------
+
+      - name: Deploy Backend Infrastructure (Namespace, ConfigMaps, Secrets, Databases)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Deploying backend infrastructure from $MANIFEST_DIR ..."
+          ls -la "$MANIFEST_DIR"
+
+          # ConfigMap
+          if [ -f "$MANIFEST_DIR/configmaps.yaml" ]; then
+            kubectl apply -f "$MANIFEST_DIR/configmaps.yaml"
+          else
+            echo "❌ $MANIFEST_DIR/configmaps.yaml not found" >&2
+            exit 1
+          fi
+
+          # Secrets (support secrets.yaml or secret.yaml)
+          if [ -f "$MANIFEST_DIR/secrets.yaml" ]; then
+            kubectl apply -f "$MANIFEST_DIR/secrets.yaml"
+          elif [ -f "$MANIFEST_DIR/secret.yaml" ]; then
+            kubectl apply -f "$MANIFEST_DIR/secret.yaml"
+          else
+            echo "❌ Neither secrets.yaml nor secret.yaml found in $MANIFEST_DIR" >&2
+            exit 1
+          fi
+
+          # Databases
+          if [ -f "$MANIFEST_DIR/product-db.yaml" ]; then
+            kubectl apply -f "$MANIFEST_DIR/product-db.yaml"
+          else
+            echo "❌ $MANIFEST_DIR/product-db.yaml not found" >&2
+            exit 1
+          fi
+
+          if [ -f "$MANIFEST_DIR/order-db.yaml" ]; then
+            kubectl apply -f "$MANIFEST_DIR/order-db.yaml"
+          else
+            echo "❌ $MANIFEST_DIR/order-db.yaml not found" >&2
+            exit 1
+          fi
 
       - name: Deploy Backend Microservices (Product, Order)
+        shell: bash
         run: |
-          echo "Deploying backend microservices..."
-          kubectl apply -f k8s/product-service.yaml
-          kubectl apply -f k8s/order-service.yaml
+          set -euo pipefail
+          echo "Deploying backend microservices from $MANIFEST_DIR ..."
+          if [ -f "$MANIFEST_DIR/product-service.yaml" ]; then
+            kubectl apply -f "$MANIFEST_DIR/product-service.yaml"
+          else
+            echo "❌ $MANIFEST_DIR/product-service.yaml not found" >&2
+            exit 1
+          fi
+          if [ -f "$MANIFEST_DIR/order-service.yaml" ]; then
+            kubectl apply -f "$MANIFEST_DIR/order-service.yaml"
+          else
+            echo "❌ $MANIFEST_DIR/order-service.yaml not found" >&2
+            exit 1
+          fi
 
       - name: Wait for Backend LoadBalancer IPs
         shell: bash
         run: |
+          set -euo pipefail
           echo "Waiting for Product, Order LoadBalancer IPs to be assigned (up to 5 minutes)..."
           PRODUCT_IP=""
           ORDER_IP=""
